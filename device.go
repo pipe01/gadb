@@ -141,14 +141,24 @@ func (d Device) RunShellCommand(cmd string, args ...string) (string, error) {
 }
 
 func (d Device) RunShellCommandWithBytes(cmd string, args ...string) ([]byte, error) {
+	r, err := d.RunShellCommandStreaming(cmd, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+
+	return io.ReadAll(r)
+}
+
+func (d Device) RunShellCommandStreaming(cmd string, args ...string) (io.ReadCloser, error) {
 	if len(args) > 0 {
 		cmd = fmt.Sprintf("%s %s", cmd, strings.Join(args, " "))
 	}
 	if strings.TrimSpace(cmd) == "" {
 		return nil, errors.New("adb shell: command cannot be empty")
 	}
-	raw, err := d.executeCommand(fmt.Sprintf("shell:%s", cmd))
-	return raw, err
+
+	return d.executeCommandStreaming(fmt.Sprintf("shell:%s", cmd))
 }
 
 func (d Device) EnableAdbOverTCP(port ...int) (err error) {
@@ -173,30 +183,37 @@ func (d Device) createDeviceTransport() (tp transport, err error) {
 }
 
 func (d Device) executeCommand(command string, onlyVerifyResponse ...bool) (raw []byte, err error) {
+	r, err := d.executeCommandStreaming(command, onlyVerifyResponse...)
+	if err != nil {
+		return nil, err
+	}
+
+	return io.ReadAll(r)
+}
+
+func (d Device) executeCommandStreaming(command string, onlyVerifyResponse ...bool) (io.ReadCloser, error) {
 	if len(onlyVerifyResponse) == 0 {
 		onlyVerifyResponse = []bool{false}
 	}
 
-	var tp transport
-	if tp, err = d.createDeviceTransport(); err != nil {
-		return nil, err
-	}
-	defer func() { _ = tp.Close() }()
-
-	if err = tp.Send(command); err != nil {
+	tp, err := d.createDeviceTransport()
+	if err != nil {
 		return nil, err
 	}
 
-	if err = tp.VerifyResponse(); err != nil {
+	if err := tp.Send(command); err != nil {
+		return nil, err
+	}
+
+	if err := tp.VerifyResponse(); err != nil {
 		return nil, err
 	}
 
 	if onlyVerifyResponse[0] {
-		return
+		return nil, nil
 	}
 
-	raw, err = tp.ReadBytesAll()
-	return
+	return tp.sock, nil
 }
 
 func (d Device) List(remotePath string) (devFileInfos []DeviceFileInfo, err error) {
